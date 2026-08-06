@@ -1,28 +1,173 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# backup
+#
+# Create a backup of one or more files or directories while preserving the
+# original filesystem layout under BACKUP_DIR.
+#
+# Example:
+#
+#   bak /etc/ssh/sshd_config
+#
+# Creates:
+#
+#   ~/backups.bak/etc/ssh/sshd_config
+#
+# Features:
+#   • Preserves permissions, ownership, timestamps, symlinks, and metadata.
+#   • Mirrors the original filesystem hierarchy.
+#   • Supports files, directories, and symbolic links.
+#   • Prevents recursive self-backups.
+#
 
-BACKUP_DIR="$HOME/backups.bak"
+set -euo pipefail
 
-backup_file() {
-    local src="$1"
-    local abs_path
-    abs_path=$(realpath "$src")
-    local dest="$BACKUP_DIR$abs_path"
+readonly BACKUP_DIR="$HOME/backups.bak"
 
-    mkdir -p "$(dirname "$dest")"
-    cp -r "$src" "$dest"
-
-    echo "Backed up: $src -> $dest"
+###############################################################################
+# Print an informational message.
+###############################################################################
+log() {
+    printf '%s\n' "$*"
 }
 
-if [[ $# -eq 0 ]]; then
-    echo "Usage: backup <file1> <file2> ..."
+###############################################################################
+# Print an error message and exit.
+###############################################################################
+die() {
+    printf 'Error: %s\n' "$*" >&2
     exit 1
-fi
+}
 
-for file in "$@"; do
-    if [[ -e "$file" ]]; then
-        backup_file "$file"
-    else
-        echo "Warning: $file does not exist."
+###############################################################################
+# Ensure the backup directory exists.
+###############################################################################
+init_backup_dir() {
+    mkdir -p -- "$BACKUP_DIR"
+}
+
+###############################################################################
+# Return a canonical absolute path.
+#
+# The -s option preserves the final symbolic link while still normalizing the
+# path. This allows symbolic links to be backed up as symbolic links.
+###############################################################################
+canonical_path() {
+    realpath -s -- "$1"
+}
+
+###############################################################################
+# Return the destination path inside BACKUP_DIR.
+###############################################################################
+backup_destination() {
+    printf '%s%s\n' "$BACKUP_DIR" "$1"
+}
+
+###############################################################################
+# Return success if SOURCE contains BACKUP_DIR.
+#
+# This prevents recursive copies such as:
+#
+#   backup ~
+#   backup /
+#   backup /home
+#
+# Prevent common recursive self-backups. This does not catch every pathological
+# symlink layout.
+###############################################################################
+contains_backup_dir() {
+
+    local source="$1"
+
+    [[ "$BACKUP_DIR" == "$source" || "$BACKUP_DIR" == "$source/"* ]]
+}
+
+###############################################################################
+# Validate a backup source.
+###############################################################################
+validate_source() {
+
+    local original="$1"
+    local source
+
+    source=$(canonical_path "$original")
+
+    [[ -e "$source" || -L "$source" ]] \
+        || die "'$original' does not exist."
+
+    if contains_backup_dir "$source"; then
+        die "Refusing to back up a directory containing BACKUP_DIR."
     fi
-done
+}
+
+###############################################################################
+# Copy a file or directory while preserving metadata.
+#
+# cp -a preserves:
+#
+#   • permissions
+#   • ownership
+#   • timestamps
+#   • symbolic links
+#   • hard links
+#   • device files
+#   • extended attributes (when supported)
+#
+###############################################################################
+copy_source() {
+
+    local source="$1"
+    local destination="$2"
+
+    mkdir -p -- "$(dirname "$destination")"
+
+    if cp -a -- "$source" "$destination"; then
+        log "Backed up: $source -> $destination"
+    else
+        die "Failed to back up '$source'."
+    fi
+}
+
+###############################################################################
+# Back up a single path.
+###############################################################################
+backup_one() {
+
+    local source
+    local destination
+
+    validate_source "$1"
+
+    source=$(canonical_path "$1")
+    destination=$(backup_destination "$source")
+
+    copy_source "$source" "$destination"
+}
+
+###############################################################################
+# Program entry point.
+###############################################################################
+main() {
+
+    if [[ $# -eq 0 ]]; then
+        cat <<EOF
+Usage:
+    bak <path> [path ...]
+
+Example:
+    bak ~/.bashrc /etc/ssh/sshd_config ~/Documents
+EOF
+        exit 1
+    fi
+
+    init_backup_dir
+
+    local path
+
+    for path in "$@"; do
+        backup_one "$path"
+    done
+}
+
+main "$@"
+
